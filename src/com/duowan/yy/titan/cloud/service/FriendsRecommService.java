@@ -128,18 +128,35 @@ public class FriendsRecommService extends
 			Vertex node = this.findUserNode(uid, graphDb);
 			if (node != null) {
 				long startRunTime = System.currentTimeMillis();
+
+				/*
 				userFollows(node, uid, max, result);
 				long endRunTime = System.currentTimeMillis();
 				long cost1 = (endRunTime - startRunTime);
 
 				startRunTime = endRunTime;
 				userGameBindingAndChannelLevel(node, uid, limit, result);
+
+				// recommFriends(node, uid, limit, result);
 				endRunTime = System.currentTimeMillis();
 				long cost2 = (endRunTime - startRunTime);
+				*/
 
-				log.info("Uid:" + uid + ", UserFollow time:" + cost1
-						+ ", GameBindingAndChannelLevel time:" + cost2 + ", result numbers:"
-						+ (result.getFriends() == null ? 0 : result.getFriends().size()));
+				startRunTime = System.currentTimeMillis();
+				recommFriends(node, uid, max, result);
+				long endRunTime = System.currentTimeMillis();
+				long cost3 = endRunTime - startRunTime;
+
+				// log.info("Split Method --- " + "Uid:" + uid +
+				// ", UserFollow time:" + cost1
+				// + ", GameBindingAndChannelLevel time:" + cost2 +
+				// ", result numbers:"
+				// + (result.getFriends() == null ? 0 :
+				// result.getFriends().size()));
+				log.info("Combine Method --- " + "Uid:" + uid +
+						",Total Time:" + cost3 + ", result numbers:"
+						+ (result.getFriends() == null ? 0 :
+								result.getFriends().size()));
 			} else {
 				log.info("Uid:" + uid + ", Cannot find node");
 			}
@@ -190,23 +207,83 @@ public class FriendsRecommService extends
 		return null;
 	}
 
+	private void recommFriends(Vertex userNode, Long userid, int limit,
+			FriendsRecommServiceResult result) {
+		GremlinPipeline[] pipes = { userFollowPipe(userNode)
+				, userGameAndChannelPipe(userNode, userid, limit) };
+		List<List> pathList = (List<List>) new GremlinPipeline<Vertex, Vertex>().start(userNode)
+				.copySplit(pipes).enablePath().exhaustMerge().next(limit * 3);
+		List<SingleUserRecommReason> reasonsListGame = new ArrayList<SingleUserRecommReason>();
+		List<SingleUserRecommReason> reasonsListChannel = new ArrayList<SingleUserRecommReason>();
+		for (List<?> path : pathList) {
+			if (path.size() == 3) {
+				// v-v-v
+				addUserFollowReason(path, result);
+			} else if (path.size() == 5) {
+				// v-e-v-e-v
+				addUserChannelAndGameReason(path, reasonsListGame, reasonsListChannel);
+			} else {
+				log.warn("Path size should be 3 or 5:" + path.size());
+			}
+		}
+		computeGameChannelBinding(reasonsListGame, RelationEnum.GAME_BINDING, result);
+		computeGameChannelBinding(reasonsListChannel, RelationEnum.CHANNEL_ROLE_LEVEL, result);
+	}
+
+	private void addUserFollowReason(List<?> path, FriendsRecommServiceResult result) {
+		Vertex middle = (Vertex) path.get(1);
+		Long uid = (Long) middle.getProperty(VertexEnum.USER_UID.getTypeName());
+		result.addRecommUser(uid, RecommReason.USER_FOLLOW_REASON);
+	}
+
+	private void addUserChannelAndGameReason(List<?> path
+			, List<SingleUserRecommReason> reasonsListGame,
+			List<SingleUserRecommReason> reasonsListChannel) {
+		Vertex end = (Vertex) path.get(path.size() - 1);
+		Long friendId = end.getProperty(VertexEnum.USER_UID.getTypeName());
+		Integer reason = null;
+		String addition = null;
+		Vertex middle = (Vertex) path.get(path.size() - 3);
+		Edge endEdge = (Edge) path.get(path.size() - 2);
+		if (endEdge.getLabel().equals(
+				RelationEnum.GAME_BINDING.getTypeName())) {
+			reason = RecommReason.GAME_BINDING;
+			addition = middle.getProperty(VertexEnum.GAME_REGION
+					.getTypeName());
+			reasonsListGame.add(new SingleUserRecommReason(friendId, reason, addition));
+		} else if (endEdge.getLabel().equals(
+				RelationEnum.CHANNEL_ROLE_LEVEL.getTypeName())) {
+			reason = RecommReason.CHANNEL_LEVEL;
+			addition = middle.getProperty(VertexEnum.CHANNEL_TID
+					.getTypeName()).toString();
+			reasonsListChannel.add(new SingleUserRecommReason(friendId, reason, addition));
+		}
+	}
+
+	private GremlinPipeline userFollowPipe(Vertex userNode) {
+		GremlinPipeline followPipe = new GremlinPipeline<Vertex, Vertex>()
+				.out(RelationEnum.USER_FOLLOW.getTypeName())
+				.out(RelationEnum.USER_FOLLOW.getTypeName())
+				.has("id", userNode.getId())
+				.path();
+		return followPipe;
+	}
+
+	private GremlinPipeline userGameAndChannelPipe(Vertex userNode, Long userid, int limit) {
+		GremlinPipeline pipe = new GremlinPipeline<Vertex, Vertex>()
+				.add(new OutEdgesPipe(limit, RelationEnum.GAME_BINDING.getTypeName(),
+						RelationEnum.CHANNEL_ROLE_LEVEL.getTypeName()))
+				.add(new InVertexPipe())
+				.add(new InEdgesPipe(limit, RelationEnum.GAME_BINDING.getTypeName(),
+						RelationEnum.CHANNEL_ROLE_LEVEL.getTypeName()))
+				.add(new OutVertexPipe())
+				.hasNot(VertexEnum.USER_UID.getTypeName(), userid)
+				.path();
+		return pipe;
+	}
+
 	private void userFollows(Vertex userNode, Long userid, int limit,
 			FriendsRecommServiceResult result) {
-		/*
-				@SuppressWarnings("unchecked")
-				List<Vertex> results = (List<Vertex>) new GremlinPipeline<Vertex, Vertex>().start(userNode)
-						.out(RelationEnum.USER_FOLLOW.getTypeName())
-						.out(RelationEnum.USER_FOLLOW.getTypeName())
-						.has("id", userNode.getId())
-						.back(1)
-						.dedup()
-						.next(limit);
-				for (Vertex r : results) {
-					Long uid = (Long) r.getProperty(VertexEnum.USER_UID.getTypeName());
-					result.addRecommUser(uid, RecommReason.USER_FOLLOW_REASON);
-				}
-		*/
-
 		List<List> pathList = new GremlinPipeline<Vertex, Vertex>().start(userNode)
 				.out(RelationEnum.USER_FOLLOW.getTypeName())
 				.out(RelationEnum.USER_FOLLOW.getTypeName())
@@ -233,25 +310,7 @@ public class FriendsRecommService extends
 						RelationEnum.CHANNEL_ROLE_LEVEL.getTypeName()))
 				.add(new OutVertexPipe())
 				.hasNot(VertexEnum.USER_UID.getTypeName(), userid)
-				.path()
-
-				/*
-				.groupBy(new PipeFunction<List, Vertex>() {
-
-					@Override
-					public Vertex compute(List arg) {
-						return (Vertex) arg.get(arg.size() - 1);
-					}
-
-				}, new PipeFunction<List, List>() {
-
-					@Override
-					public List compute(List arg) {
-						return arg;
-					}
-				})
-				*/
-				.next(limit);
+				.path().next(limit);
 
 		List<SingleUserRecommReason> reasonsListGame = new ArrayList<SingleUserRecommReason>();
 		List<SingleUserRecommReason> reasonsListChannel = new ArrayList<SingleUserRecommReason>();

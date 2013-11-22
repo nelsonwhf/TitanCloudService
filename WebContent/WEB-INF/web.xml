@@ -21,7 +21,7 @@
 
 	<context-param>
 		<param-name>redisHost</param-name>
-		<!-- <param-value>183.61.12.145</param-value> -->
+		<!--<param-value>183.61.12.145</param-value>-->
 		<param-value>172.19.102.17</param-value>
 	</context-param>
 	<context-param>
