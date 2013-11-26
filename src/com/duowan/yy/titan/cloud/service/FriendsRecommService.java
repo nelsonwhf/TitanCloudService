@@ -28,8 +28,11 @@ import redis.clients.jedis.JedisPool;
 
 import com.duowan.yy.titan.cloud.constant.RelationEnum;
 import com.duowan.yy.titan.cloud.constant.VertexEnum;
+import com.duowan.yy.titan.cloud.pipe.GroupbyReasonPipe;
 import com.duowan.yy.titan.cloud.pipe.InEdgesPipe;
 import com.duowan.yy.titan.cloud.pipe.OutEdgesPipe;
+import com.duowan.yy.titan.cloud.pipe.function.RecommKeyFunction;
+import com.duowan.yy.titan.cloud.pipe.function.RecommValueFunction;
 import com.duowan.yy.titan.cloud.redis.RedisUtils;
 import com.duowan.yy.titan.cloud.serde.JsonObjectMapper;
 import com.duowan.yy.titan.cloud.service.request.FriendsRecommRequest;
@@ -123,36 +126,13 @@ public class FriendsRecommService extends
 		result.setMaxRecommAmount(max);
 		result.setUid(uid);
 
-		int limit = max * 2;
 		try {
 			Vertex node = this.findUserNode(uid, graphDb);
 			if (node != null) {
 				long startRunTime = System.currentTimeMillis();
-
-				/*
-				userFollows(node, uid, max, result);
-				long endRunTime = System.currentTimeMillis();
-				long cost1 = (endRunTime - startRunTime);
-
-				startRunTime = endRunTime;
-				userGameBindingAndChannelLevel(node, uid, limit, result);
-
-				// recommFriends(node, uid, limit, result);
-				endRunTime = System.currentTimeMillis();
-				long cost2 = (endRunTime - startRunTime);
-				*/
-
-				startRunTime = System.currentTimeMillis();
-				recommFriends(node, uid, max, result);
+				recommFriends(node, max, result);
 				long endRunTime = System.currentTimeMillis();
 				long cost3 = endRunTime - startRunTime;
-
-				// log.info("Split Method --- " + "Uid:" + uid +
-				// ", UserFollow time:" + cost1
-				// + ", GameBindingAndChannelLevel time:" + cost2 +
-				// ", result numbers:"
-				// + (result.getFriends() == null ? 0 :
-				// result.getFriends().size()));
 				log.info("Combine Method --- " + "Uid:" + uid +
 						",Total Time:" + cost3 + ", result numbers:"
 						+ (result.getFriends() == null ? 0 :
@@ -207,27 +187,16 @@ public class FriendsRecommService extends
 		return null;
 	}
 
-	private void recommFriends(Vertex userNode, Long userid, int limit,
+	private void recommFriends(Vertex userNode, int max,
 			FriendsRecommServiceResult result) {
 		GremlinPipeline[] pipes = { userFollowPipe(userNode)
-				, userGameAndChannelPipe(userNode, userid, limit) };
-		List<List> pathList = (List<List>) new GremlinPipeline<Vertex, Vertex>().start(userNode)
-				.copySplit(pipes).enablePath().exhaustMerge().next(limit * 3);
-		List<SingleUserRecommReason> reasonsListGame = new ArrayList<SingleUserRecommReason>();
-		List<SingleUserRecommReason> reasonsListChannel = new ArrayList<SingleUserRecommReason>();
-		for (List<?> path : pathList) {
-			if (path.size() == 3) {
-				// v-v-v
-				addUserFollowReason(path, result);
-			} else if (path.size() == 5) {
-				// v-e-v-e-v
-				addUserChannelAndGameReason(path, reasonsListGame, reasonsListChannel);
-			} else {
-				log.warn("Path size should be 3 or 5:" + path.size());
-			}
-		}
-		computeGameChannelBinding(reasonsListGame, RelationEnum.GAME_BINDING, result);
-		computeGameChannelBinding(reasonsListChannel, RelationEnum.CHANNEL_ROLE_LEVEL, result);
+				, userGameAndChannelPipe(userNode, max) };
+		Map<Long, List<RecommReason>> friends = new HashMap<Long, List<RecommReason>>();
+		new GremlinPipeline<Vertex, Vertex>().start(userNode)
+				.copySplit(pipes).enablePath().exhaustMerge()
+				.add(new GroupbyReasonPipe(max, friends, new RecommKeyFunction(),
+						new RecommValueFunction()));
+		result.setFriends(friends);
 	}
 
 	private void addUserFollowReason(List<?> path, FriendsRecommServiceResult result) {
@@ -262,22 +231,22 @@ public class FriendsRecommService extends
 
 	private GremlinPipeline userFollowPipe(Vertex userNode) {
 		GremlinPipeline followPipe = new GremlinPipeline<Vertex, Vertex>()
-				.out(RelationEnum.USER_FOLLOW.getTypeName())
-				.out(RelationEnum.USER_FOLLOW.getTypeName())
-				.has("id", userNode.getId())
+				.outE(RelationEnum.USER_FOLLOW.getTypeName())
+				.inV().outE(RelationEnum.USER_FOLLOW.getTypeName())
+				.inV().has("id", userNode.getId())
 				.path();
 		return followPipe;
 	}
 
-	private GremlinPipeline userGameAndChannelPipe(Vertex userNode, Long userid, int limit) {
+	private GremlinPipeline userGameAndChannelPipe(Vertex userNode, int max) {
 		GremlinPipeline pipe = new GremlinPipeline<Vertex, Vertex>()
-				.add(new OutEdgesPipe(limit, RelationEnum.GAME_BINDING.getTypeName(),
+				.add(new OutEdgesPipe(max, RelationEnum.GAME_BINDING.getTypeName(),
 						RelationEnum.CHANNEL_ROLE_LEVEL.getTypeName()))
 				.add(new InVertexPipe())
-				.add(new InEdgesPipe(limit, RelationEnum.GAME_BINDING.getTypeName(),
+				.add(new InEdgesPipe(max, RelationEnum.GAME_BINDING.getTypeName(),
 						RelationEnum.CHANNEL_ROLE_LEVEL.getTypeName()))
 				.add(new OutVertexPipe())
-				.hasNot(VertexEnum.USER_UID.getTypeName(), userid)
+				.hasNot("id", userNode.getId())
 				.path();
 		return pipe;
 	}

@@ -12,8 +12,7 @@ import org.codehaus.jackson.map.annotate.JsonSerialize;
 
 /**
  * 
- * @author WangHongfei.Nelson
- *2013-9-17
+ * @author WangHongfei.Nelson 2013-9-17
  */
 @JsonSerialize(include = JsonSerialize.Inclusion.NON_NULL)
 public class FriendsRecommServiceResult {
@@ -49,6 +48,10 @@ public class FriendsRecommServiceResult {
 			friends = new HashMap<Long, List<RecommReason>>();
 		}
 		return friends;
+	}
+
+	public void setFriends(Map<Long, List<RecommReason>> friends) {
+		this.friends = friends;
 	}
 
 	/**
